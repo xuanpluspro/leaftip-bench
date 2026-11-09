@@ -1,4 +1,4 @@
-"""Queue the existing PET, SAHCC, CGTipNet and P2RLoss trainers; collect best validation results."""
+"""Queue six point-counting baselines; collect best validation results."""
 import argparse
 import csv
 import hashlib
@@ -15,7 +15,11 @@ import sys
 ROOT = Path(__file__).resolve().parent
 WEIGHT = 'vgg16_bn-6c64b313.pth'
 DATASETS = ('Wheat500', 'Rice1700')
-MODELS = ('pet', 'sahcc', 'cgtipnet', 'p2rloss')
+MODELS = ('pet', 'sahcc', 'cgtipnet', 'p2rloss', 'p2pnet', 'cltr')
+POINT_UPSTREAM = {
+    'p2pnet': ('CrowdCounting-P2PNet', '5c91a81ca062b1c7fd3db3ad1c55b1c21f0a7455', 'models/p2pnet.py'),
+    'cltr': ('CLTR', 'ab1b5e58eec4851cc629379abeeaceff908b48f4', 'Networks/CDETR/conditional_detr.py'),
+}
 SCORES = ('mae', 'rmse', 'f1_4px', 'f1_8px', 'f1_16px')
 COLUMNS = ('dataset', 'model', 'seed', 'batch_size', 'status', 'best_epoch', *SCORES,
            'error', 'metrics_file')
@@ -43,10 +47,14 @@ def parse_args(argv=None):
     p.add_argument('--sah-batch-size', type=int, default=40)
     p.add_argument('--cgtipnet-batch-size', '--tipfuse-batch-size', type=int, default=40)
     p.add_argument('--p2rloss-batch-size', type=int, default=16)
+    p.add_argument('--p2pnet-batch-size', type=int, default=8)
+    p.add_argument('--cltr-batch-size', type=int, default=4)
+    p.add_argument('--cltr-queries', type=int, default=500)
+    p.add_argument('--cltr-weights', type=Path, default=ROOT/'pretrained'/'resnet50-0676ba61.pth')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args(argv)
-    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.cgtipnet_batch_size, a.p2rloss_batch_size) < 1 or a.workers < 0:
+    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.cgtipnet_batch_size, a.p2rloss_batch_size, a.p2pnet_batch_size, a.cltr_batch_size, a.cltr_queries) < 1 or a.workers < 0:
         p.error('epochs, validation frequency and batch sizes must be positive; workers >= 0')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', a.run_name):
         p.error('invalid run name')
@@ -74,6 +82,23 @@ def dataset_splits(root):
 
 
 def plan(a, dataset, model):
+    if model in POINT_UPSTREAM:
+        repo = (a.repos_root / POINT_UPSTREAM[model][0]).resolve()
+        data = (a.data_root/dataset).resolve()
+        run = (a.output_root/a.run_name/dataset/f'{model}_seed{a.seed}').resolve()
+        dest = run/'artifacts'
+        batch = a.p2pnet_batch_size if model == 'p2pnet' else a.cltr_batch_size
+        weights = (a.weights if model == 'p2pnet' else a.cltr_weights).resolve()
+        args = [sys.executable, '-u', str(ROOT/'train_point_baseline.py'),
+                '--model', model, '--upstream', str(repo),
+                '--data-code', str((a.repos_root/'tipnova').resolve()),
+                '--data-path', str(data), '--weights', str(weights), '--output', str(dest),
+                '--batch-size', str(batch), '--epochs', str(a.epochs),
+                '--workers', str(a.workers), '--eval-every', str(a.eval_every),
+                '--seed', str(a.seed)]
+        if model == 'cltr':
+            args += ['--cltr-queries', str(a.cltr_queries)]
+        return repo, data, run, dest, batch, args, weights
     names = {'pet': 'PET', 'sahcc': 'sah-leaf-counting', 'cgtipnet': 'tipnova', 'p2rloss': 'p2rloss'}
     repo = (a.repos_root/names[model]).resolve()
     data = (a.data_root/dataset).resolve()
@@ -137,7 +162,7 @@ def load_result(path, expected_samples):
 
 
 def check_repo(repo, args, model):
-    entry = repo/args[2]
+    entry = repo/(POINT_UPSTREAM[model][2] if model in POINT_UPSTREAM else args[2])
     if not entry.is_file():
         raise ValueError(f'Missing trainer: {entry}')
     if model == 'cgtipnet':
@@ -161,11 +186,19 @@ def main(argv=None):
             continue
         split_hash = dataset_splits(data)
         revision = check_repo(repo, args, model)
+        extra = {}
+        if model in POINT_UPSTREAM:
+            expected = POINT_UPSTREAM[model][1]
+            if revision != expected:
+                raise ValueError(f'{repo}: expected upstream revision {expected}; see README')
+            data_repo = (a.repos_root/'tipnova').resolve()
+            extra['data_code_revision'] = check_repo(data_repo, ['', '', 'dataset.py'], 'data')
+            extra['adapter_sha256'] = hashlib.sha256((ROOT/'train_point_baseline.py').read_bytes()).hexdigest()
         if not weights.is_file():
             raise ValueError(f'Missing pretrained weight: {weights}')
         st = weights.stat()
         manifest = dict(command=args, repo=str(repo), revision=revision, splits=split_hash,
-                        weight_path=str(weights), weight_size=st.st_size, weight_mtime_ns=st.st_mtime_ns)
+                        weight_path=str(weights), weight_size=st.st_size, weight_mtime_ns=st.st_mtime_ns, **extra)
         config = run/'config.json'
         if model == 'cgtipnet' and not run.exists() and run.with_name(f'tipfuse_seed{a.seed}').exists():
             raise ValueError('Legacy TipFuse run exists. Use the old benchmark revision to resume it, '
