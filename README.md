@@ -1,20 +1,20 @@
 # LeafTip Bench
 
-Wheat500 和 Rice1700 独立训练、独立验证。首版接入 PET、SAHCC、TipFuse，一条命令在单张 CUDA 卡上顺序运行六组。P2PNet、CSRNet 暂未接入。
+Wheat500 和 Rice1700 独立训练、独立验证。首版接入 PET、SAHCC、CGTipNet，一条命令在单张 CUDA 卡上顺序运行六组。P2PNet、CSRNet 暂未接入。
 
 | 模型 | 实际训练入口 | 默认 batch size |
 |---|---|---:|
 | PET | PET/main.py | 8 |
 | SAHCC | sah-leaf-counting/train.py | 40 |
-| TipFuse | tipnova/train.py --variant tipfuse | 40 |
+| CGTipNet | tipnova/train.py --variant cgtipnet | 40 |
 
 PET 的 8 是保守起点，并非架构上限。SAHCC 的 40 来自此前 RiceW3999 实验。默认 50 epochs、seed 2024、每轮验证；显存不足时降低对应模型的 batch size，使用新 run-name。各模型保留自己的训练增强、学习率与损失；这不是严格的同训练器消融。
 
 ## 1. 准备已有仓库和权重
 
-默认兄弟目录：`PET/`、`sah-leaf-counting/`、`tipnova/`、`leaftip-bench/`。其他父目录用 `--repos-root`。TipNova 要切到 `experiment/tipfuse`；PET 要包含 RiceW3999 数据入口、自动续训和 `best_metrics.json` 输出。不要修改仓库源码；运行时记录各仓库提交号。依赖使用原训练环境，调度器自身只用标准库。
+默认兄弟目录：`PET/`、`sah-leaf-counting/`、`tipnova/`、`leaftip-bench/`。其他父目录用 `--repos-root`。TipNova 使用支持 `--variant cgtipnet` 的 `main` 分支；PET 要包含 RiceW3999 数据入口、自动续训和 `best_metrics.json` 输出。不要修改仓库源码；运行时记录各仓库提交号。依赖使用原训练环境，调度器自身只用标准库。
 
-PET 的本地 ImageNet 权重仍放在 `PET/pretrained/vgg16_bn-6c64b313.pth`；SAHCC 和 TipFuse 通过 `--weights` 共用同一权重。可以把它指向 PET 已有的文件，无需复制。
+PET 的本地 ImageNet 权重仍放在 `PET/pretrained/vgg16_bn-6c64b313.pth`；SAHCC 和 CGTipNet 通过 `--weights` 共用同一权重。可以把它指向 PET 已有的文件，无需复制。
 
 ## 2. 准备数据
 
@@ -33,7 +33,9 @@ python batch_train.py --dry-run
 python batch_train.py --run-name ep50 --weights ../PET/pretrained/vgg16_bn-6c64b313.pth
 ```
 
-只跑一组：追加 `--datasets Wheat500 --models pet`。可分别通过 `--pet-batch-size`、`--sah-batch-size`、`--tipfuse-batch-size` 调整。重跑同名实验用相同参数加 `--resume`，完成的任务跳过，未完成的由原训练器从最近完整 epoch 恢复。不要在同一个 run-name 上并发启动多个调度器。
+只跑一组：追加 `--datasets Wheat500 --models pet`。可分别通过 `--pet-batch-size`、`--sah-batch-size`、`--cgtipnet-batch-size` 调整。重跑同名实验用相同参数加 `--resume`，完成的任务跳过，未完成的由原训练器从最近完整 epoch 恢复。不要在同一个 run-name 上并发启动多个调度器。
+
+`--models CGTipNet` 和 `--models cgtipnet` 等效；`--models tipfuse`、`--tipfuse-batch-size` 是兼容别名。新实验用 `cgtipnet` 作为结果标识；已有 `tipfuse_seed*` 运行如需续跑，请继续使用原调度器版本，或另取 run-name 开新实验。
 
 每组目录含 `config.json`、`console.log` 和训练产物。汇总在 `outputs/<run-name>/results.csv`，每组一行。失败记录在表内并继续后续任务，最终返回非零退出码。选最佳权重用各入口的验证 MAE；汇总 MAE、RMSE 与一对一匹配 F1@4/8/16px。复用现有合并集训练权重不能替代这两套数据的独立训练。
 

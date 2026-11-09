@@ -1,4 +1,4 @@
-"""Queue the existing PET, SAHCC and TipFuse trainers; collect best validation results."""
+"""Queue the existing PET, SAHCC and CGTipNet trainers; collect best validation results."""
 import argparse
 import csv
 import hashlib
@@ -15,10 +15,15 @@ import sys
 ROOT = Path(__file__).resolve().parent
 WEIGHT = 'vgg16_bn-6c64b313.pth'
 DATASETS = ('Wheat500', 'Rice1700')
-MODELS = ('pet', 'sahcc', 'tipfuse')
+MODELS = ('pet', 'sahcc', 'cgtipnet')
 SCORES = ('mae', 'rmse', 'f1_4px', 'f1_8px', 'f1_16px')
 COLUMNS = ('dataset', 'model', 'seed', 'batch_size', 'status', 'best_epoch', *SCORES,
            'error', 'metrics_file')
+
+
+def model_name(value):
+    name = value.lower()
+    return 'cgtipnet' if name == 'tipfuse' else name
 
 
 def parse_args(argv=None):
@@ -29,18 +34,18 @@ def parse_args(argv=None):
     p.add_argument('--output-root', type=Path, default=ROOT/'outputs')
     p.add_argument('--run-name', default='baseline')
     p.add_argument('--datasets', nargs='+', choices=DATASETS, default=DATASETS)
-    p.add_argument('--models', nargs='+', choices=MODELS, default=MODELS)
+    p.add_argument('--models', nargs='+', type=model_name, choices=MODELS, default=MODELS)
     p.add_argument('--epochs', type=int, default=50)
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--eval-every', type=int, default=1)
     p.add_argument('--seed', type=int, default=2024)
     p.add_argument('--pet-batch-size', type=int, default=8)
     p.add_argument('--sah-batch-size', type=int, default=40)
-    p.add_argument('--tipfuse-batch-size', type=int, default=40)
+    p.add_argument('--cgtipnet-batch-size', '--tipfuse-batch-size', type=int, default=40)
     p.add_argument('--resume', action='store_true')
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args(argv)
-    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.tipfuse_batch_size) < 1 or a.workers < 0:
+    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.cgtipnet_batch_size) < 1 or a.workers < 0:
         p.error('epochs, validation frequency and batch sizes must be positive; workers >= 0')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', a.run_name):
         p.error('invalid run name')
@@ -68,11 +73,11 @@ def dataset_splits(root):
 
 
 def plan(a, dataset, model):
-    names = {'pet': 'PET', 'sahcc': 'sah-leaf-counting', 'tipfuse': 'tipnova'}
+    names = {'pet': 'PET', 'sahcc': 'sah-leaf-counting', 'cgtipnet': 'tipnova'}
     repo = (a.repos_root/names[model]).resolve()
     data = (a.data_root/dataset).resolve()
     run = (a.output_root/a.run_name/dataset/f'{model}_seed{a.seed}').resolve()
-    batch = {'pet': a.pet_batch_size, 'sahcc': a.sah_batch_size, 'tipfuse': a.tipfuse_batch_size}[model]
+    batch = {'pet': a.pet_batch_size, 'sahcc': a.sah_batch_size, 'cgtipnet': a.cgtipnet_batch_size}[model]
     args = [sys.executable, '-u']
     if model == 'pet':
         dest = run/'artifacts'
@@ -87,8 +92,8 @@ def plan(a, dataset, model):
                  '--batch-size', str(batch), '--epochs', str(a.epochs),
                  '--workers', str(a.workers), '--eval-every', str(a.eval_every),
                  '--seed', str(a.seed), '--output-root', str(run), '--tag', 'train', '--auto-resume']
-        if model == 'tipfuse':
-            args += ['--variant', 'tipfuse']
+        if model == 'cgtipnet':
+            args += ['--variant', 'cgtipnet']
         weights = a.weights.resolve()
     args += ['--device', 'cuda', '--loc-radii', '4', '8', '16']
     return repo, data, run, dest, batch, args, weights
@@ -121,10 +126,10 @@ def check_repo(repo, args, model):
     entry = repo/args[2]
     if not entry.is_file():
         raise ValueError(f'Missing trainer: {entry}')
-    if model == 'tipfuse':
+    if model == 'cgtipnet':
         source = entry.read_text(encoding='utf-8')
-        if '--variant' not in source or "'tipfuse'" not in source:
-            raise ValueError(f'{repo}: checkout experiment/tipfuse first')
+        if '--variant' not in source or "'cgtipnet'" not in source:
+            raise ValueError(f'{repo}: update tipnova/main to a version supporting --variant cgtipnet')
     status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=repo, text=True)
     if status.strip():
         raise ValueError(f'Commit or stash tracked source changes before launching: {repo}')
@@ -148,6 +153,9 @@ def main(argv=None):
         manifest = dict(command=args, repo=str(repo), revision=revision, splits=split_hash,
                         weight_path=str(weights), weight_size=st.st_size, weight_mtime_ns=st.st_mtime_ns)
         config = run/'config.json'
+        if model == 'cgtipnet' and not run.exists() and run.with_name(f'tipfuse_seed{a.seed}').exists():
+            raise ValueError('Legacy TipFuse run exists. Use the old benchmark revision to resume it, '
+                             'or use a new --run-name for CGTipNet.')
         if run.exists():
             if not a.resume:
                 raise ValueError(f'Run exists: {run}. Use --resume or a new --run-name.')
