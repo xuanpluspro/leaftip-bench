@@ -1,4 +1,4 @@
-"""Queue the existing PET, SAHCC and CGTipNet trainers; collect best validation results."""
+"""Queue the existing PET, SAHCC, CGTipNet and P2RLoss trainers; collect best validation results."""
 import argparse
 import csv
 import hashlib
@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 WEIGHT = 'vgg16_bn-6c64b313.pth'
 DATASETS = ('Wheat500', 'Rice1700')
-MODELS = ('pet', 'sahcc', 'cgtipnet')
+MODELS = ('pet', 'sahcc', 'cgtipnet', 'p2rloss')
 SCORES = ('mae', 'rmse', 'f1_4px', 'f1_8px', 'f1_16px')
 COLUMNS = ('dataset', 'model', 'seed', 'batch_size', 'status', 'best_epoch', *SCORES,
            'error', 'metrics_file')
@@ -42,10 +42,11 @@ def parse_args(argv=None):
     p.add_argument('--pet-batch-size', type=int, default=8)
     p.add_argument('--sah-batch-size', type=int, default=40)
     p.add_argument('--cgtipnet-batch-size', '--tipfuse-batch-size', type=int, default=40)
+    p.add_argument('--p2rloss-batch-size', type=int, default=16)
     p.add_argument('--resume', action='store_true')
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args(argv)
-    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.cgtipnet_batch_size) < 1 or a.workers < 0:
+    if min(a.epochs, a.eval_every, a.pet_batch_size, a.sah_batch_size, a.cgtipnet_batch_size, a.p2rloss_batch_size) < 1 or a.workers < 0:
         p.error('epochs, validation frequency and batch sizes must be positive; workers >= 0')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', a.run_name):
         p.error('invalid run name')
@@ -73,11 +74,12 @@ def dataset_splits(root):
 
 
 def plan(a, dataset, model):
-    names = {'pet': 'PET', 'sahcc': 'sah-leaf-counting', 'cgtipnet': 'tipnova'}
+    names = {'pet': 'PET', 'sahcc': 'sah-leaf-counting', 'cgtipnet': 'tipnova', 'p2rloss': 'p2rloss'}
     repo = (a.repos_root/names[model]).resolve()
     data = (a.data_root/dataset).resolve()
     run = (a.output_root/a.run_name/dataset/f'{model}_seed{a.seed}').resolve()
-    batch = {'pet': a.pet_batch_size, 'sahcc': a.sah_batch_size, 'cgtipnet': a.cgtipnet_batch_size}[model]
+    batch = {'pet': a.pet_batch_size, 'sahcc': a.sah_batch_size, 'cgtipnet': a.cgtipnet_batch_size,
+             'p2rloss': a.p2rloss_batch_size}[model]
     args = [sys.executable, '-u']
     if model == 'pet':
         dest = run/'artifacts'
@@ -86,6 +88,18 @@ def plan(a, dataset, model):
                  '--num_workers', str(a.workers), '--eval_freq', str(a.eval_every),
                  '--seed', str(a.seed), '--output_dir', str(dest), '--auto-resume']
         weights = repo/'pretrained'/WEIGHT
+    elif model == 'p2rloss':
+        dest = run/'train'/'output'
+        weights = a.weights.resolve()
+        # P2RLoss derives OUTPUT with os.path.join('exp', TAG, 'output').
+        # An absolute tag keeps artifacts inside this benchmark job.
+        args += ['main.py', '--data-path', str(data), '--label', '100',
+                 '--batch-size', str(batch), '--tag', str(run/'train'), '--opts',
+                 'DATA.DATASET', 'ricew3999', 'DATA.NUM_WORKERS', str(a.workers),
+                 'TRAIN.EPOCHS', str(a.epochs), 'SAVE_FREQ', str(a.eval_every),
+                 'SEED', str(a.seed), 'TRAIN.AUTO_RESUME', 'True',
+                 'MODEL.PRETRAINED', str(weights), 'TEST.LOC_RADII', '[4.0, 8.0, 16.0]']
+        return repo, data, run, dest, batch, args, weights
     else:
         dest = run/'train'/'output'
         args += ['train.py', '--data-path', str(data), '--pretrained', str(a.weights.resolve()),
