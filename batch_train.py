@@ -1,6 +1,7 @@
 """Queue six point-counting baselines; collect best validation results."""
 import argparse
 import csv
+from point_efficiency import FIELDS as EFFICIENCY_FIELDS
 import hashlib
 import itertools
 import json
@@ -21,7 +22,7 @@ POINT_UPSTREAM = {
     'cltr': ('CLTR', 'ab1b5e58eec4851cc629379abeeaceff908b48f4', 'Networks/CDETR/conditional_detr.py'),
 }
 SCORES = ('mae', 'rmse', 'f1_4px', 'f1_8px', 'f1_16px')
-COLUMNS = ('dataset', 'model', 'seed', 'batch_size', 'status', 'best_epoch', *SCORES,
+COLUMNS = ('dataset', 'model', 'seed', 'batch_size', 'status', 'best_epoch', *SCORES, *EFFICIENCY_FIELDS,
            'error', 'metrics_file')
 
 
@@ -247,6 +248,11 @@ def main(argv=None):
             else:
                 row.update(load_result(best, manifest['splits']['val']['samples']))
                 print('Already completed; skipped.')
+            efficiency = dest/'results.csv'
+            if efficiency.is_file():
+                with efficiency.open(encoding='utf-8', newline='') as stream:
+                    profile = next(csv.DictReader(stream), {})
+                row.update({key: profile.get(key, '') for key in EFFICIENCY_FIELDS})
             row['status'] = 'ok'
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             failed = True
