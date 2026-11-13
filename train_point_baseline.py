@@ -228,6 +228,9 @@ def main():
                           "epoch": epoch, "best": best, "fingerprint": fingerprint,
                           "rng": ckpt.rng_state()}, latest)
 
+    from point_efficiency import export_efficiency
+    export_efficiency(model, args.output)
+
 
 if __name__ == "__main__":
     main()
